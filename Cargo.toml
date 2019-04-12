@@ -1,0 +1,18 @@
+[package]
+name = "cryptown"
+version = "0.1.0"
+authors = ["Boris Kraportov <boris.kraportov@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+exonum="0.11.0"
+exonum-derive="0.11.0"
+failure = "0.1.5"
+serde = "1.0.0"
+serde_derive = "1.0.0"
+serde_json = "1.0.0"
+protobuf = "2.2.0"
+
+[build-dependencies]
+exonum-build = "0.11.0"
+
