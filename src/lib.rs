@@ -15,41 +15,14 @@ use exonum::messages::RawTransaction;
 use exonum::storage::{Fork, MapIndex, Snapshot};
 
 mod proto;
+mod common_structs;
+mod identity;
+
+use common_structs::Token;
 
 const SERVICE_ID: u16 = 1;
 
 pub const SERVICE_NAME: &str = "cryptocurrency";
-
-const INIT_BALANCE: u64 = 100;
-
-#[derive(Serialize, Deserialize, Clone, Debug, ProtobufConvert)]
-#[exonum(pb = "proto::cryptocurrency::Wallet")]
-pub struct Wallet {
-    pub pub_key: PublicKey,
-    pub name: String,
-    pub balance: u64,
-}
-
-impl Wallet {
-    pub fn new(&pub_key: &PublicKey, name: &str, balance: u64) -> Self {
-        Self {
-            pub_key,
-            name: name.to_owned(),
-            balance,
-        }
-    }
-
-    pub fn increase(self, amount: u64) -> Self {
-        let balance = self.balance + amount;
-        Self::new(&self.pub_key, &self.name, balance)
-    }
-
-    pub fn decrease(self, amount: u64) -> Self {
-        debug_assert!(self.balance >= amount);
-        let balance = self.balance - amount;
-        Self::new(&self.pub_key, &self.name, balance)
-  }
-}
 
 pub struct CurrencySchema<T> {
     view: T,
@@ -62,62 +35,41 @@ impl<T: AsRef<Snapshot>> CurrencySchema<T> {
     }
 
     // Utility method to get a list of all the wallets from the storage
-    pub fn wallets(&self) -> MapIndex<&Snapshot, PublicKey, Wallet> {
-        MapIndex::new("cryptocurrency.wallets", self.view.as_ref())
+    pub fn tokens(&self) -> MapIndex<&Snapshot, String, Token> {
+        MapIndex::new("cryptocurrency.tokens", self.view.as_ref())
     }
 
     // Utility method to quickly get a separate wallet from the storage
-    pub fn wallet(&self, pub_key: &PublicKey) -> Option<Wallet> {
-        self.wallets().get(pub_key)
+    pub fn token(&self, symbol: &str) -> Option<Token> {
+        self.tokens().get(symbol)
     }
 }
 
 impl<'a> CurrencySchema<&'a mut Fork> {
-    pub fn wallets_mut(&mut self) -> MapIndex<&mut Fork, PublicKey, Wallet> {
-        MapIndex::new("cryptocurrency.wallets", &mut self.view)
+    pub fn tokens_mut(&mut self) -> MapIndex<&mut Fork, String, Token> {
+        MapIndex::new("cryptocurrency.tokens", &mut self.view)
     }
 }
 
 
 #[derive(Serialize, Deserialize, Clone, Debug, ProtobufConvert)]
-#[exonum(pb = "proto::cryptocurrency::TxCreateWallet")]
-pub struct TxCreateWallet {
-    pub name: String,
+#[exonum(pb = "proto::cryptocurrency::TxCreateToken")]
+pub struct TxCreateToken {
+    pub symbol: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, ProtobufConvert)]
-#[exonum(pb = "proto::cryptocurrency::TxTransfer")]
-pub struct TxTransfer {
-    pub to: PublicKey,
-    pub amount: u64,
-    pub seed: u64,
-}
 
 #[derive(Serialize, Deserialize, Clone, Debug, TransactionSet)]
 pub enum CurrencyTransactions {
     /// Create wallet transaction.
-    CreateWallet(TxCreateWallet),
-    /// Transfer tokens transaction.
-    Transfer(TxTransfer),
+    CreateToken(TxCreateToken),
 }
 
 #[derive(Debug, Fail)]
 #[repr(u8)]
 pub enum Error {
-    #[fail(display = "Wallet already exists")]
-    WalletAlreadyExists = 0,
-
-    #[fail(display = "Sender does not exist")]
-    SenderNotFound = 1,
-
-    #[fail(display = "Receiver does not exist")]
-    ReceiverNotFound = 2,
-
-    #[fail(display = "Insufficient currency amount")]
-    InsufficientCurrencyAmount = 3,
-
-    #[fail(display = "Sender same as receiver")]
-    SenderSameAsReceiver = 4,
+    #[fail(display = "Token already exists")]
+    TokenAlreadyExists = 0
 }
 
 // Conversion between service-specific errors and the standard error type
@@ -129,89 +81,52 @@ impl From<Error> for ExecutionError {
     }
 }
 
-impl Transaction for TxCreateWallet {
+impl Transaction for TxCreateToken {
     fn execute(&self, mut context: TransactionContext) -> ExecutionResult {
         let author = context.author();
         let view = context.fork();
         let mut schema = CurrencySchema::new(view);
-        if schema.wallet(&author).is_none() {
-            let wallet = Wallet::new(&author, &self.name, INIT_BALANCE);
-            println!("Create the wallet: {:?}", wallet);
-            schema.wallets_mut().put(&author, wallet);
+        if schema.token(&self.symbol).is_none() {
+            let token = Token::new(&self.symbol, &author);
+            println!("Create the token: {:?}", token);
+            schema.tokens_mut().put(&self.symbol, token);
             Ok(())
         } else {
-            Err(Error::WalletAlreadyExists)?
-        }
-    }
-}
-
-impl Transaction for TxTransfer {
-    fn execute(&self, mut context: TransactionContext) -> ExecutionResult {
-        let author = context.author();
-        let view = context.fork();
-
-        if author == self.to {
-            Err(Error::SenderSameAsReceiver)?
-        }
-
-        let mut schema = CurrencySchema::new(view);
-
-        let sender = match schema.wallet(&author) {
-            Some(val) => val,
-            None => Err(Error::SenderNotFound)?,
-        };
-
-        let receiver = match schema.wallet(&self.to) {
-            Some(val) => val,
-            None => Err(Error::ReceiverNotFound)?,
-        };
-
-        let amount = self.amount;
-        if sender.balance >= amount {
-            let sender = sender.decrease(amount);
-            let receiver = receiver.increase(amount);
-            println!("Transfer between wallets: {:?} => {:?}", sender, receiver);
-            let mut wallets = schema.wallets_mut();
-            wallets.put(&author, sender);
-            wallets.put(&self.to, receiver);
-            Ok(())
-        } else {
-            Err(Error::InsufficientCurrencyAmount)?
+            Err(Error::TokenAlreadyExists)?
         }
     }
 }
 
 struct CryptocurrencyApi;
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
-pub struct WalletQuery {
-    /// Public key of the requested wallet.
-    pub pub_key: PublicKey,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TokenQuery {
+    pub symbol: String,
 }
 
 impl CryptocurrencyApi {
     /// Endpoint for getting a single wallet.
-    pub fn get_wallet(
+    pub fn get_token(
         state: &ServiceApiState,
-        query: WalletQuery
-    ) -> api::Result<Wallet> {
+        query: TokenQuery
+    ) -> api::Result<Token> {
         let snapshot = state.snapshot();
         let schema = CurrencySchema::new(snapshot);
         schema
-            .wallet(&query.pub_key)
-            .ok_or_else(|| api::Error::NotFound("\"Wallet not found\"".to_owned()))
+            .token(&query.symbol)
+            .ok_or_else(|| api::Error::NotFound("\"Token not found\"".to_owned()))
     }
 
     /// Endpoint for dumping all wallets from the storage.
-    pub fn get_wallets(
+    pub fn get_tokens(
         state: &ServiceApiState,
         _query: ()
-    ) -> api::Result<Vec<Wallet>> {
+    ) -> api::Result<Vec<Token>> {
         let snapshot = state.snapshot();
         let schema = CurrencySchema::new(snapshot);
-        let idx = schema.wallets();
-        let wallets = idx.values().collect();
-        Ok(wallets)
+        let idx = schema.tokens();
+        let tokens = idx.values().collect();
+        Ok(tokens)
     }
 }
 
@@ -220,8 +135,8 @@ impl CryptocurrencyApi {
         // Binds handlers to the specific routes.
         builder
             .public_scope()
-            .endpoint("v1/wallet", Self::get_wallet)
-            .endpoint("v1/wallets", Self::get_wallets);
+            .endpoint("/token", Self::get_token)
+            .endpoint("/tokens", Self::get_tokens);
     }
 }
 
